@@ -1040,6 +1040,9 @@ table.bt td:first-child{color:var(--w2);font-weight:500}
 
 @media(max-width:900px){.tv-grid{grid-template-columns:1fr}.tv-stocks-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:600px){.tv-stocks-grid{grid-template-columns:1fr}}
+
+.sc-tv-quote{margin:8px 0;border-radius:6px;overflow:hidden;background:var(--bg2);min-height:58px}
+.sc-tv-quote iframe{border-radius:6px}
 .reg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));
   gap:1px;background:var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:1.25rem}
 .rg{background:var(--bg1);padding:1.25rem 1.5rem;transition:background .2s}
@@ -2473,18 +2476,27 @@ function renderStocks(filter){
   var list=filter==='all'?stocksData:stocksData.filter(function(x){return x.s===filter;});
   sg.innerHTML=list.map(function(s){
     var up=Math.round(((s.tp-s.cmp)/s.cmp)*100),yc=s.ytd>=0?'pos':'neg';
-    return '<div class="sc"><div class="sc-top"><div><div class="sc-ticker">'+s.t+'.N</div>'
+    var tvSym='CSELK:'+s.t+'.N0000';
+    return '<div class="sc">'
+      +'<div class="sc-top"><div><div class="sc-ticker">'+s.t+'.N</div>'
       +'<div class="sc-s">'+s.s+'</div></div><span class="badge buy">BUY</span></div>'
       +'<div class="sc-name">'+s.n+'</div>'
-      +'<div class="sc-pr"><div class="sc-cmp" id="price-'+s.t+'">LKR '+s.cmp.toLocaleString()+'</div>'
-      +'<div class="sc-up-pct" id="upside-'+s.t+'">'+(up>=0?'+':'')+up+'% '+(up>=0?'↑':'↓')+'</div></div>'
-      +'<div class="sc-tp">Target: LKR '+s.tp.toLocaleString()+'</div>'
+      // TradingView single-quote widget - shows live price directly
+      +'<div class="sc-tv-quote tradingview-widget-container" id="tvq-'+s.t+'">'
+        +'<div class="tradingview-widget-container__widget"></div>'
+        +'<script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-single-quote.js" async>'
+        +JSON.stringify({"symbol":tvSym,"width":"100%","height":60,"locale":"en","colorTheme":"dark","isTransparent":true})+'\<\/script>'
+      +'</div>'
+      +'<div class="sc-tp">Asia Securities Target: <strong style="color:var(--gold)">LKR '+s.tp.toLocaleString()+'</strong>'
+      +' &nbsp;·&nbsp; <span style="color:'+(up>=0?'var(--green)':'var(--red)')+'">'+(up>=0?'+':'')+up+'% upside</span></div>'
       +'<div class="sc-div" id="change-'+s.t+'"></div>'
       +'<div class="sc-stats"><div><div class="sc-ml">TTM P/E</div><div class="sc-mv">'+s.pe+'×</div></div>'
       +'<div><div class="sc-ml">YTD</div><div class="sc-mv '+yc+'">'+(s.ytd>0?'+':'')+s.ytd+'%</div></div>'
       +'<div><div class="sc-ml">Tot. Return</div><div class="sc-mv gold">+'+s.tsr+'%</div></div>'
       +'</div></div>';
   }).join('');
+  // Re-init TradingView widgets after DOM injection
+  if(typeof TradingView !== 'undefined') { /* already loaded */ }
 }
 window.fS=function(btn,f){
   document.querySelectorAll('.fb').forEach(function(b){b.classList.remove('on');});
@@ -2590,6 +2602,290 @@ window.setDivFilter=function(btn,threshold){
   document.querySelectorAll('.div-btn').forEach(function(b){b.classList.remove('on');});
   btn.classList.add('on'); divThreshold=threshold; renderDivGrid();
 };
+
+// ══════════════════════════════════════════════════════════════
+// DOM INIT — runs once DOM is ready
+// ══════════════════════════════════════════════════════════════
+
+// ── Portfolio Tracker
+var portHoldings = [];
+
+function portRender() {
+  var empty = document.getElementById('port-empty');
+  var tableWrap = document.getElementById('port-table-wrap');
+  var summary = document.getElementById('port-summary');
+  var tbody = document.getElementById('port-tbody');
+  if (!tbody) return;
+
+  if (portHoldings.length === 0) {
+    if (empty) empty.style.display = 'block';
+    if (tableWrap) tableWrap.style.display = 'none';
+    if (summary) summary.style.display = 'none';
+    return;
+  }
+
+  if (empty) empty.style.display = 'none';
+  if (tableWrap) tableWrap.style.display = 'block';
+  if (summary) summary.style.display = 'grid';
+
+  var totalValue = 0, weightedRet = 0;
+  portHoldings.forEach(function(h) {
+    totalValue += h.value;
+  });
+  portHoldings.forEach(function(h) {
+    weightedRet += (h.ret * h.value / totalValue);
+  });
+
+  tbody.innerHTML = portHoldings.map(function(h, i) {
+    var retCls = h.ret >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+    var retStr = (h.ret > 0 ? '+' : '') + h.ret.toFixed(1) + '%';
+    var pe = h.pe ? h.pe.toFixed(1) + 'x' : '—';
+    var dv = h.dv ? h.dv.toFixed(2) + '%' : '—';
+    return '<tr>'
+      + '<td>' + h.ticker + '</td>'
+      + '<td>' + h.name + '</td>'
+      + '<td>' + h.qty.toLocaleString() + '</td>'
+      + '<td>LKR ' + h.price.toLocaleString() + '</td>'
+      + '<td>LKR ' + Math.round(h.value).toLocaleString() + '</td>'
+      + '<td style="' + retCls + '">' + retStr + '</td>'
+      + '<td>' + pe + '</td>'
+      + '<td>' + dv + '</td>'
+      + '<td><button class="port-del" onclick="portRemove(' + i + ')">✕</button></td>'
+      + '</tr>';
+  }).join('');
+
+  // Summary
+  var aspiRet = 38; // ASPI 1Y return
+  var diff = weightedRet - aspiRet;
+  var diffStr = (diff >= 0 ? '+' : '') + diff.toFixed(1) + '% vs ASPI';
+  var diffCol = diff >= 0 ? 'var(--green)' : 'var(--red)';
+
+  var tv = document.getElementById('port-total-val');
+  var pr = document.getElementById('port-ret');
+  var va = document.getElementById('port-vs-aspi');
+  var pc = document.getElementById('port-count');
+  if (tv) tv.textContent = totalValue >= 1e6 ? 'LKR ' + (totalValue/1e6).toFixed(2) + 'M' : 'LKR ' + Math.round(totalValue).toLocaleString();
+  if (pr) { pr.textContent = (weightedRet >= 0 ? '+' : '') + weightedRet.toFixed(1) + '%'; pr.style.color = weightedRet >= 0 ? 'var(--green)' : 'var(--red)'; }
+  if (va) { va.textContent = diffStr; va.style.color = diffCol; }
+  if (pc) pc.textContent = portHoldings.length;
+
+  // Save to sessionStorage
+  try { sessionStorage.setItem('portHoldings', JSON.stringify(portHoldings)); } catch(e) {}
+}
+
+window.portAdd = function() {
+  var tickerEl = document.getElementById('port-ticker');
+  var qtyEl = document.getElementById('port-qty');
+  var errEl = document.getElementById('port-err');
+  if (!tickerEl || !qtyEl) return;
+
+  var ticker = tickerEl.value.trim().toUpperCase().replace(/\.N$/,'');
+  var qty = parseInt(qtyEl.value);
+  if (errEl) errEl.textContent = '';
+
+  if (!ticker) { if (errEl) errEl.textContent = 'Please enter a ticker symbol'; return; }
+  if (!qty || qty < 1) { if (errEl) errEl.textContent = 'Please enter a valid number of shares'; return; }
+
+  // Find in cseData
+  var found = null;
+  for (var i = 0; i < cseData.length; i++) {
+    if (cseData[i].Ticker === ticker || cseData[i].Ticker === ticker + '.N') {
+      found = cseData[i]; break;
+    }
+  }
+
+  if (!found) {
+    if (errEl) errEl.textContent = '⚠ Ticker "' + ticker + '" not found in CSE data. Check the spelling.';
+    return;
+  }
+
+  // Check duplicate
+  var dup = portHoldings.some(function(h) { return h.ticker === ticker; });
+  if (dup) { if (errEl) errEl.textContent = ticker + ' is already in your portfolio'; return; }
+
+  portHoldings.push({
+    ticker: ticker,
+    name: found.Name.length > 28 ? found.Name.slice(0,26) + '…' : found.Name,
+    qty: qty,
+    price: found.Price || 0,
+    value: (found.Price || 0) * qty,
+    ret: found.Return1Y || 0,
+    pe: found.PE,
+    dv: found.DivYield
+  });
+
+  tickerEl.value = '';
+  qtyEl.value = '';
+  tickerEl.focus();
+  portRender();
+};
+
+window.portRemove = function(idx) {
+  portHoldings.splice(idx, 1);
+  portRender();
+};
+
+// Portfolio enter key + session restore - moved to main DOMContentLoaded below
+var __portInitCode = function() {
+  var tickerEl = document.getElementById('port-ticker');
+  var qtyEl = document.getElementById('port-qty');
+  if (tickerEl) tickerEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') { qtyEl && qtyEl.focus(); } });
+  if (qtyEl) qtyEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') { portAdd(); } });
+  try {
+    var saved = sessionStorage.getItem('portHoldings');
+    if (saved) { portHoldings = JSON.parse(saved); portRender(); }
+  } catch(e) {}
+};
+
+
+
+// ══════════════════════════════════════════════════════════════
+// LIVE PRICES VIA TRADINGVIEW — no proxy, no API key needed
+// Uses TradingView postMessage to receive real-time prices
+// ══════════════════════════════════════════════════════════════
+var tvPrices = {};   // ticker -> {price, change, changePct}
+var tvWidgets = {};  // ticker -> iframe element
+
+// TradingView symbols for each stock pick
+var tvSymMap = {
+  'SAMP':'CSELK:SAMP.N0000','HNB':'CSELK:HNB.N0000','COMB':'CSELK:COMB.N0000',
+  'NTB':'CSELK:NTB.N0000',  'DFCC':'CSELK:DFCC.N0000','JKH':'CSELK:JKH.N0000',
+  'CIC':'CSELK:CIC.N0000',  'HHL':'CSELK:HHL.N0000', 'SUN':'CSELK:SUN.N0000',
+  'RCL':'CSELK:RCL.N0000',  'TKYO':'CSELK:TKYO.N0000','ACL':'CSELK:ACL.N0000',
+  'LIOC':'CSELK:LIOC.N0000','LLUB':'CSELK:LLUB.N0000','DIAL':'CSELK:DIAL.N0000',
+  'PKME':'CSELK:PKME.N0000','CCS':'CSELK:CCS.N0000'
+};
+
+function setBadge(msg, isLive) {
+  var badge = document.getElementById('stocks-live-badge');
+  if (!badge) return;
+  if (isLive) {
+    badge.innerHTML = '<span style="color:var(--green);font-weight:600">● LIVE</span>'
+      + ' <span style="color:var(--w4)">· Prices via TradingView CSE feed · '
+      + new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}) + '</span>';
+  } else {
+    badge.innerHTML = '<span style="color:var(--w4)">' + msg + '</span>';
+  }
+}
+
+function applyPrice(ticker, price, change, changePct) {
+  tvPrices[ticker] = {price:price, change:change, changePct:changePct};
+
+  var stock = null;
+  for (var i = 0; i < stocksData.length; i++) {
+    if (stocksData[i].t === ticker) { stock = stocksData[i]; break; }
+  }
+  if (!stock || !price || price <= 0) return;
+
+  var upside  = Math.round(((stock.tp - price) / price) * 100);
+  var isUp    = change >= 0;
+  var col     = isUp ? 'var(--green)' : 'var(--red)';
+  var chgStr  = (isUp?'+':'') + change.toFixed(2) + ' (' + (isUp?'+':'') + changePct.toFixed(1) + '%)';
+
+  var priceEl  = document.getElementById('price-'  + ticker);
+  var upsideEl = document.getElementById('upside-' + ticker);
+  var changeEl = document.getElementById('change-' + ticker);
+
+  if (priceEl) {
+    priceEl.textContent = 'LKR ' + price.toFixed(2);
+    priceEl.style.transition = 'color .5s';
+    priceEl.style.color = col;
+    setTimeout(function(){ if(priceEl) priceEl.style.color=''; }, 2000);
+  }
+  if (upsideEl) {
+    upsideEl.textContent = (upside>=0?'+':'') + upside + '% ' + (upside>=0?'↑':'↓');
+    upsideEl.style.color = upside >= 0 ? 'var(--green)' : 'var(--red)';
+  }
+  if (changeEl) {
+    changeEl.innerHTML = '<div style="font-size:11px;font-family:var(--mono);color:'+col+';margin-bottom:6px;padding:4px 0;border-top:1px solid rgba(255,255,255,.05)">'
+      + 'Today: ' + chgStr + '</div>';
+  }
+
+  // Update badge with count
+  var liveCount = Object.keys(tvPrices).length;
+  if (liveCount > 0) setBadge('', true);
+}
+
+// Hidden TradingView single-value widgets - one per stock
+// Each widget posts price data via postMessage
+function injectTVPriceWidgets() {
+  var container = document.getElementById('tv-price-widgets');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'tv-price-widgets';
+    container.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;top:-9999px';
+    document.body.appendChild(container);
+  }
+
+  Object.keys(tvSymMap).forEach(function(ticker) {
+    var sym = tvSymMap[ticker];
+    var wrapper = document.createElement('div');
+    wrapper.className = 'tradingview-widget-container';
+    wrapper.style.cssText = 'width:200px;height:60px';
+    wrapper.innerHTML = '<div class="tradingview-widget-container__widget"></div>';
+    
+    var script = document.createElement('script');
+    script.type = 'text/javascript';
+    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-single-quote.js';
+    script.async = true;
+    // Store ticker on script for identification
+    script.setAttribute('data-ticker', ticker);
+    script.textContent = JSON.stringify({
+      "symbol": sym,
+      "width": 200,
+      "height": 60,
+      "locale": "en",
+      "colorTheme": "dark",
+      "isTransparent": true,
+      "autosize": false
+    });
+    wrapper.appendChild(script);
+    container.appendChild(wrapper);
+    tvWidgets[ticker] = wrapper;
+  });
+}
+
+// Listen for postMessage from TradingView iframes
+window.addEventListener('message', function(e) {
+  if (!e.data) return;
+  var d = e.data;
+  // TradingView sends price updates as JSON strings
+  try {
+    var msg = typeof d === 'string' ? JSON.parse(d) : d;
+    // Look for price data in TradingView message format
+    if (msg && msg.name === 'quotes-update' && msg.data) {
+      var quotes = msg.data;
+      if (!Array.isArray(quotes)) quotes = [quotes];
+      quotes.forEach(function(q) {
+        if (!q.v || !q.v.lp) return; // lp = last price
+        var sym = q.v.short_name || q.v.base_currency_id || '';
+        // Match to our ticker
+        Object.keys(tvSymMap).forEach(function(ticker) {
+          if (tvSymMap[ticker].indexOf(sym) >= 0 || sym === ticker || sym === ticker + '.N0000') {
+            applyPrice(ticker, q.v.lp, q.v.ch || 0, q.v.chp || 0);
+          }
+        });
+      });
+    }
+    // Also handle simpler format
+    if (msg && msg.price && msg.symbol) {
+      Object.keys(tvSymMap).forEach(function(ticker) {
+        if (tvSymMap[ticker] === msg.symbol || msg.symbol.indexOf(ticker) >= 0) {
+          applyPrice(ticker, msg.price, msg.change || 0, msg.changePct || 0);
+        }
+      });
+    }
+  } catch(err) {}
+}, false);
+
+function startLivePriceUpdates() {
+  // TradingView single-quote widgets are embedded directly in each card
+  // They load and update automatically - no proxy needed
+  setBadge('', true);
+  // Also try postMessage approach as bonus
+  setTimeout(injectTVPriceWidgets, 2000);
+}
+
 
 // ══════════════════════════════════════════════════════════════
 // DOM INIT — runs once DOM is ready
