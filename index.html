@@ -2476,10 +2476,10 @@ function renderStocks(filter){
     return '<div class="sc"><div class="sc-top"><div><div class="sc-ticker">'+s.t+'.N</div>'
       +'<div class="sc-s">'+s.s+'</div></div><span class="badge buy">BUY</span></div>'
       +'<div class="sc-name">'+s.n+'</div>'
-      +'<div class="sc-pr"><div class="sc-cmp">LKR '+s.cmp.toLocaleString()+'</div>'
-      +'<div class="sc-up-pct">+'+up+'% ↑</div></div>'
+      +'<div class="sc-pr"><div class="sc-cmp" id="price-'+s.t+'">LKR '+s.cmp.toLocaleString()+'</div>'
+      +'<div class="sc-up-pct" id="upside-'+s.t+'">'+(up>=0?'+':'')+up+'% '+(up>=0?'↑':'↓')+'</div></div>'
       +'<div class="sc-tp">Target: LKR '+s.tp.toLocaleString()+'</div>'
-      +'<div class="sc-div"></div>'
+      +'<div class="sc-div" id="change-'+s.t+'"></div>'
       +'<div class="sc-stats"><div><div class="sc-ml">TTM P/E</div><div class="sc-mv">'+s.pe+'×</div></div>'
       +'<div><div class="sc-ml">YTD</div><div class="sc-mv '+yc+'">'+(s.ytd>0?'+':'')+s.ytd+'%</div></div>'
       +'<div><div class="sc-ml">Tot. Return</div><div class="sc-mv gold">+'+s.tsr+'%</div></div>'
@@ -2726,6 +2726,98 @@ var __portInitCode = function() {
 };
 
 
+
+// ══════════════════════════════════════════════════════════════
+// LIVE PRICE UPDATER — Yahoo Finance via CORS proxy
+// Updates stock pick cards with real-time CSE prices
+// ══════════════════════════════════════════════════════════════
+var liveprices = {}; // cache: ticker -> {price, change, changePct}
+
+function fetchLivePrices() {
+  // Build Yahoo Finance symbols for all 17 stocks
+  var symbols = stocksData.map(function(s) { return s.t + '.N0000.CSE'; });
+  var url = 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=' 
+    + symbols.join(',') + '&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketTime';
+  
+  // Use allorigins.win as CORS proxy (free, no key needed)
+  var proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(url);
+
+  fetch(proxyUrl, {method:'GET'})
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var content = JSON.parse(data.contents);
+      var quotes = content.quoteResponse && content.quoteResponse.result;
+      if (!quotes || quotes.length === 0) return;
+
+      quotes.forEach(function(q) {
+        // Extract ticker: "SAMP.N0000.CSE" -> "SAMP"
+        var ticker = q.symbol.replace('.N0000.CSE','');
+        liveprices[ticker] = {
+          price:     q.regularMarketPrice,
+          change:    q.regularMarketChange,
+          changePct: q.regularMarketChangePercent,
+          time:      q.regularMarketTime
+        };
+      });
+
+      // Re-render stocks with live prices
+      updateStockCardsWithLivePrices();
+    })
+    .catch(function(err) {
+      console.log('Live price fetch failed (offline or API unavailable):', err);
+      var badge = document.getElementById('stocks-live-badge');
+      if (badge) badge.innerHTML = '<span style="color:var(--w4)">📊 Prices as of 22 Apr 2026 · Live data unavailable (offline or market closed)</span>';
+    });
+}
+
+function updateStockCardsWithLivePrices() {
+  var cards = document.querySelectorAll('.sc');
+  if (!cards.length) return;
+
+  // Update the live price badge
+  var badge = document.getElementById('stocks-live-badge');
+  if (badge) {
+    badge.innerHTML = '<span style="color:var(--green);font-weight:600">● LIVE PRICES</span>'
+      + ' <span style="color:var(--w4)">— Updated just now · CSE data via Yahoo Finance</span>';
+  }
+
+  // Update each stock using IDs (reliable across filter changes)
+  stocksData.forEach(function(stock) {
+    var live = liveprices[stock.t];
+    if (!live || !live.price) return;
+
+    var price    = live.price;
+    var change   = live.change;
+    var changePct= live.changePct;
+    var upside   = Math.round(((stock.tp - price) / price) * 100);
+    var isUp     = change >= 0;
+    var col      = isUp ? 'var(--green)' : 'var(--red)';
+    var chgStr   = (isUp?'+':'') + change.toFixed(2) + ' (' + (isUp?'+':'') + changePct.toFixed(2) + '%)';
+
+    var priceEl  = document.getElementById('price-'  + stock.t);
+    var upsideEl = document.getElementById('upside-' + stock.t);
+    var changeEl = document.getElementById('change-' + stock.t);
+
+    if (priceEl)  { priceEl.textContent = 'LKR ' + price.toFixed(2); priceEl.style.color = 'var(--w1)'; }
+    if (upsideEl) {
+      upsideEl.textContent = (upside>=0?'+':'') + upside + '% ' + (upside>=0?'↑':'↓');
+      upsideEl.style.color = upside >= 0 ? 'var(--green)' : 'var(--red)';
+    }
+    if (changeEl) {
+      changeEl.innerHTML = '<div style="font-size:11px;font-family:var(--mono);color:'+col+';margin-bottom:4px">'
+        + 'Today: ' + chgStr + '</div>';
+    }
+  });
+}
+
+// Fetch on page load + refresh every 5 minutes during market hours
+function startLivePriceUpdates() {
+  fetchLivePrices();
+  // Refresh every 5 minutes
+  setInterval(fetchLivePrices, 5 * 60 * 1000);
+}
+
+
 document.addEventListener('DOMContentLoaded',function(){
 
   // iOS vh fix
@@ -2768,6 +2860,8 @@ document.addEventListener('DOMContentLoaded',function(){
   if (typeof __portInitCode === 'function') __portInitCode();
   renderInv();
   renderStocks('all');
+  // Start live price updates after stocks render
+  setTimeout(startLivePriceUpdates, 1500);
   filterReturns();
   calcSim();
   setTimeout(renderDivGrid,150);
